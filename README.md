@@ -1,0 +1,158 @@
+# SocialUpward.com — Creator Growth Marketplace
+
+A complete, production-ready e-commerce SaaS platform for a digital marketing & creator
+growth agency. Dark-mode gradient UI (indigo / violet / emerald), interactive package
+configurator, no-password instant checkout, order tracking, and a full admin panel.
+
+**Stack:** Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · Prisma 7 (PostgreSQL)
+· Stripe hooks · Lucide + Simple Icons
+
+---
+
+## 1. Prerequisites
+
+- Node.js 20+
+- A PostgreSQL database — **Vercel Postgres** or **Supabase** (free tiers work)
+- (Optional) Stripe account for live card payments
+
+## 2. Environment setup
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+| Variable | Where to get it |
+|---|---|
+| `DATABASE_URL` | Vercel Postgres → Storage tab → `.env.local` → copy `POSTGRES_PRISMA_URL` (pooled), or Supabase → Project Settings → Database → Connection string (pooler, port `6543`) |
+| `ADMIN_PASSWORD` | Make up a long random password — unlocks `/admin` |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` | Stripe Dashboard → Developers → API keys (optional; checkout runs in stub mode without them) |
+| `NEXT_PUBLIC_SITE_URL` | `https://your-domain.com` in production |
+
+## 3. Install & database
+
+```bash
+npm install            # postinstall runs `prisma generate` automatically
+npx prisma migrate deploy   # create all tables (or: npx prisma db push for quick prototyping)
+npm run seed           # seed 7 platforms, categories, tiers, reviews, coupons
+npm run dev            # → http://localhost:3000
+```
+
+Verify: homepage → pick a platform → configure a package → checkout → track it at
+`/track-order` → manage everything at `/admin` (password from `.env`).
+
+## 4. Git init & push to GitHub
+
+```bash
+cd socialupward
+git init
+git add .
+git commit -m "feat: SocialUpward.com growth marketplace — initial build"
+```
+
+Create the repo (GitHub CLI), then push:
+
+```bash
+gh repo create MuhammadShahbazRaza/socialupward --public --source=. --remote=origin
+git branch -M main
+git push -u origin main
+```
+
+Or create the repo manually at <https://github.com/new> (owner `MuhammadShahbazRaza`,
+name `socialupward`), then:
+
+```bash
+git remote add origin git@github.com:MuhammadShahbazRaza/socialupward.git
+git branch -M main
+git push -u origin main
+```
+
+## 5. Deploy to Vercel
+
+```bash
+npm i -g vercel
+vercel                # link / create the project (first run is interactive)
+vercel env add DATABASE_URL production
+vercel env add ADMIN_PASSWORD production
+# optional: vercel env add STRIPE_SECRET_KEY production
+vercel --prod
+```
+
+Or connect the GitHub repo in the Vercel dashboard — `vercel.json` already sets the
+build command to `prisma generate && prisma migrate deploy && next build`, and every
+push to `main` will migrate + deploy automatically. Add the same env vars in
+Project → Settings → Environment Variables.
+
+Seed the production database once:
+
+```bash
+DATABASE_URL="<production-pooled-url>" npm run seed
+```
+
+## 6. Key routes
+
+| Route | What it does |
+|---|---|
+| `/` | Landing: hero, platform grid, reviews, FAQ, social-proof toasts |
+| `/services/[platform]` | Categories for a platform |
+| `/services/[platform]/[category]` | Interactive configurator: tier toggle, quantity grid/slider, live pricing |
+| `/checkout?tier=…&qty=…` | 3-step checkout: package → details (never passwords) → payment |
+| `/track-order` | Live order status via email + order ID |
+| `/admin` | Password-protected dashboard: orders, pricing, coupons, reviews |
+
+## 7. API reference
+
+- `GET /api/platforms` · `GET /api/categories?platform=slug` · `GET /api/tiers/[id]`
+- `POST /api/orders` — create order (server-side pricing, coupon validation)
+- `GET /api/orders?id=…&email=…` — order lookup for the tracker
+- `POST /api/coupons/validate` — `{ code }` → `{ valid, discountPct }`
+- `POST /api/admin/login` (+ `DELETE` logout)
+- `GET /api/admin/stats` · `POST /api/admin/orders` · `PATCH /api/admin/orders/[id]`
+- `GET /api/admin/tiers` · `PUT /api/admin/tiers/[id]`
+- `GET|POST /api/admin/coupons` · `PATCH|DELETE /api/admin/coupons/[id]`
+- `GET /api/admin/reviews` · `DELETE /api/admin/reviews/[id]`
+
+## 8. Payments
+
+Checkout supports **Stripe**, **Card**, and **Crypto** tabs. With `STRIPE_SECRET_KEY`
+set, orders create a real Stripe Checkout Session and redirect the buyer. Without keys,
+the flow runs in stub mode (order is created as `PENDING`/`UNPAID`) so you can demo
+end-to-end immediately. Crypto uses a stub hook in `src/lib/payments.ts` — plug in
+Coinbase Commerce or NOWPayments there.
+
+> **Webhook (recommended for production):** add `STRIPE_WEBHOOK_SECRET` and a
+> `/api/webhooks/stripe` route that marks orders `PAID` on
+> `checkout.session.completed`. The order ID is already in the session metadata.
+
+## 9. Project structure
+
+```
+prisma/
+  schema.prisma      # Platform, ServiceCategory, PackageTier, Order, Coupon, Review
+  seed.ts            # 7 platforms, 19 categories, 38 tiers, 8 reviews, 3 coupons
+  migrations/        # generated by `prisma migrate dev`
+prisma.config.ts     # Prisma 7 datasource config (DATABASE_URL)
+src/
+  app/
+    page.tsx                    # landing
+    services/[platform]/…       # catalog + configurator
+    checkout/                   # 3-step checkout + Stripe success page
+    track-order/                # order tracker
+    admin/                      # gated dashboard
+    api/…                       # public + admin REST routes
+  components/
+    ui/              # button, card, input, badge, accordion, dialog, table, select, slider
+    package-configurator.tsx
+    checkout-flow.tsx  order-tracker.tsx
+    admin-dashboard.tsx  admin-login.tsx
+  lib/
+    prisma.ts  catalog.ts  pricing.ts  payments.ts  auth.ts
+```
+
+## 10. Notes
+
+- Pricing is **always recomputed server-side** in `POST /api/orders` — clients can't
+  spoof totals.
+- The admin session is an HMAC-signed `httpOnly` cookie derived from `ADMIN_PASSWORD`.
+- `npm run build` runs with no database; all data pages are `force-dynamic`.

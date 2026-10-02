@@ -1,0 +1,140 @@
+// SocialUpward.com — Prisma schema
+// Database: PostgreSQL (Vercel Postgres or Supabase) via DATABASE_URL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Connection URL lives in prisma.config.ts (Prisma 7+) via DATABASE_URL
+}
+
+enum OrderStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  REFILL_REQUESTED
+  CANCELLED
+}
+
+enum PaymentProvider {
+  stripe
+  card
+  crypto
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Platform {
+  id          String            @id @default(cuid())
+  name        String            @unique
+  slug        String            @unique
+  icon        String // lucide icon name, e.g. "instagram"
+  gradient    String // tailwind gradient classes, e.g. "from-pink-500 to-amber-400"
+  description String
+  order       Int               @default(0)
+  categories  ServiceCategory[]
+  orders      Order[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@map("platforms")
+}
+
+model ServiceCategory {
+  id          String        @id @default(cuid())
+  platformId  String
+  platform    Platform      @relation(fields: [platformId], references: [id], onDelete: Cascade)
+  name        String // e.g. "Audience Growth Tiers", "Engagement Boosts"
+  slug        String
+  description String
+  order       Int           @default(0)
+  tiers       PackageTier[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([platformId, slug])
+  @@map("service_categories")
+}
+
+model PackageTier {
+  id               String          @id @default(cuid())
+  serviceCategoryId String
+  serviceCategory  ServiceCategory @relation(fields: [serviceCategoryId], references: [id], onDelete: Cascade)
+  tierName         String // "Standard" | "Premium/VIP"
+  unitLabel        String // e.g. "followers", "likes", "views"
+  basePricePer1000 Float // reference price for 1,000 units, in USD
+  // [{ qty, pricePer1000, discountPct }] — quantity breakpoints, ascending
+  priceTiers       Json
+  features         String[]        @default([])
+  deliveryEstimate String          @default("1-24 hours")
+  guaranteeDays    Int             @default(30)
+  minQuantity      Int             @default(100)
+  maxQuantity      Int             @default(100000)
+  active           Boolean         @default(true)
+  orders           Order[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@map("package_tiers")
+}
+
+model Order {
+  id             String          @id @default(cuid())
+  email          String
+  usernameOrUrl  String
+  platformId     String
+  platform       Platform        @relation(fields: [platformId], references: [id])
+  packageTierId  String
+  packageTier    PackageTier     @relation(fields: [packageTierId], references: [id])
+  quantity       Int
+  unitPrice      Float // effective price per 1,000 units at purchase time
+  subtotal       Float
+  discountAmount Float           @default(0)
+  total          Float
+  couponCode     String?
+  status         OrderStatus     @default(PENDING)
+  paymentProvider PaymentProvider @default(stripe)
+  paymentStatus  PaymentStatus   @default(UNPAID)
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+  @@map("orders")
+}
+
+model Coupon {
+  id         String    @id @default(cuid())
+  code       String    @unique
+  discountPct Float
+  active     Boolean   @default(true)
+  maxUses    Int?
+  usedCount  Int       @default(0)
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@map("coupons")
+}
+
+model Review {
+  id           String   @id @default(cuid())
+  name         String
+  rating       Int // 1-5
+  text         String
+  platformName String
+  verified     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  @@map("reviews")
+}
