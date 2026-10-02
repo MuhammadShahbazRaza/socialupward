@@ -25,8 +25,33 @@ export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const platforms = await getPlatforms();
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://socialupward.vercel.app";
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        name: "SocialUpward",
+        url: siteUrl,
+        description:
+          "Creator growth agency: real-looking followers, engagement and views for Instagram, TikTok, YouTube, X, Facebook, Twitch and Spotify.",
+        sameAs: [],
+      },
+      {
+        "@type": "WebSite",
+        name: "SocialUpward",
+        url: siteUrl,
+      },
+    ],
+  };
   return (
     <html lang="en" className="dark">
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        />
+      </head>
       <body className="min-h-screen bg-ink-950 text-slate-100 antialiased">
         <Navbar platforms={platforms} />
         <main className="min-h-[70vh]">{children}</main>
