@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   PackageSearch,
@@ -17,7 +17,8 @@ import { Input, Label } from "./ui/input";
 import { Badge } from "./ui/badge";
 import { Card, CardContent } from "./ui/card";
 import { cn } from "./ui/cn";
-import { formatUSD, shortOrderId } from "@/lib/pricing";
+import { formatUSD, displayOrderId } from "@/lib/pricing";
+import { findLocalOrder } from "@/lib/local-orders";
 
 type OrderPayload = {
   id: string;
@@ -60,6 +61,7 @@ export function OrderTracker() {
   const [order, setOrder] = useState<OrderPayload | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const autoLookedUp = useRef(false);
 
   const lookup = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -74,15 +76,41 @@ export function OrderTracker() {
       const res = await fetch(
         `/api/orders?id=${encodeURIComponent(orderId.trim())}&email=${encodeURIComponent(email.trim())}`,
       );
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error ?? "Order not found");
-      setOrder(d.order);
+      const d = await res.json().catch(() => ({}));
+      if (res.ok && d.order) {
+        setOrder(d.order);
+        return;
+      }
+      // API missed (no DB, or a different serverless instance) — check the
+      // browser's local order cache before giving up.
+      const local = findLocalOrder(orderId, email);
+      if (local) {
+        setOrder(local);
+        return;
+      }
+      throw new Error(typeof d.error === "string" ? d.error : "Order not found");
     } catch (err) {
+      if (err instanceof TypeError) {
+        const local = findLocalOrder(orderId, email);
+        if (local) {
+          setOrder(local);
+          return;
+        }
+      }
       setError(err instanceof Error ? err.message : "Lookup failed");
     } finally {
       setLoading(false);
     }
   };
+
+  // Auto-run when arriving from the checkout success page with params.
+  useEffect(() => {
+    if (!autoLookedUp.current && orderId.trim() && email.trim()) {
+      autoLookedUp.current = true;
+      void lookup();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const stageIndex =
     order?.status === "COMPLETED" ? 2 : order?.status === "IN_PROGRESS" ? 1 : 0;
@@ -130,7 +158,7 @@ export function OrderTracker() {
                 <div>
                   <div className="text-sm text-slate-400">Order</div>
                   <div className="font-mono text-xl font-bold text-white">
-                    {shortOrderId(order.id)}
+                    {displayOrderId(order.id)}
                   </div>
                 </div>
                 <Badge tone={STATUS_TONE[order.status] ?? "slate"} className="text-sm px-3 py-1">

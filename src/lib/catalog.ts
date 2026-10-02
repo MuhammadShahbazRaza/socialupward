@@ -1,22 +1,36 @@
 import { prisma } from "./prisma";
 import type { Platform, ServiceCategory, PackageTier } from "@prisma/client";
+import {
+  FALLBACK_PLATFORMS,
+  FALLBACK_REVIEWS,
+  getFallbackPlatformBySlug,
+  getFallbackCategory,
+  getFallbackTierById,
+} from "./catalog-fallback";
 
 export type PlatformWithCategories = Platform & {
   categories: (ServiceCategory & { tiers: PackageTier[] })[];
 };
 
-/** Safe fetch — returns [] instead of throwing when the DB isn't reachable. */
+/** True when a database connection string is configured. */
+export function hasDatabase(): boolean {
+  return !!process.env.DATABASE_URL;
+}
+
+/** Safe fetch — database first, static fallback when the DB is missing/unreachable. */
 export async function getPlatforms(): Promise<Platform[]> {
+  if (!hasDatabase()) return FALLBACK_PLATFORMS;
   try {
     return await prisma.platform.findMany({ orderBy: { order: "asc" } });
   } catch {
-    return [];
+    return FALLBACK_PLATFORMS;
   }
 }
 
 export async function getPlatformBySlug(slug: string): Promise<PlatformWithCategories | null> {
+  if (!hasDatabase()) return getFallbackPlatformBySlug(slug);
   try {
-    return await prisma.platform.findUnique({
+    const platform = await prisma.platform.findUnique({
       where: { slug },
       include: {
         categories: {
@@ -25,48 +39,60 @@ export async function getPlatformBySlug(slug: string): Promise<PlatformWithCateg
         },
       },
     });
+    if (platform) return platform;
   } catch {
-    return null;
+    // fall through to static data
   }
+  return getFallbackPlatformBySlug(slug);
 }
 
 export async function getCategory(
   platformSlug: string,
   categorySlug: string,
 ): Promise<(ServiceCategory & { platform: Platform; tiers: PackageTier[] }) | null> {
+  if (!hasDatabase()) return getFallbackCategory(platformSlug, categorySlug);
   try {
     const platform = await prisma.platform.findUnique({ where: { slug: platformSlug } });
-    if (!platform) return null;
-    return await prisma.serviceCategory.findFirst({
-      where: { platformId: platform.id, slug: categorySlug },
-      include: {
-        platform: true,
-        tiers: { where: { active: true }, orderBy: { tierName: "asc" } },
-      },
-    });
+    if (platform) {
+      const category = await prisma.serviceCategory.findFirst({
+        where: { platformId: platform.id, slug: categorySlug },
+        include: {
+          platform: true,
+          tiers: { where: { active: true }, orderBy: { tierName: "asc" } },
+        },
+      });
+      if (category) return category;
+    }
   } catch {
-    return null;
+    // fall through to static data
   }
+  return getFallbackCategory(platformSlug, categorySlug);
 }
 
 export async function getTierById(id: string) {
+  if (!hasDatabase()) return getFallbackTierById(id);
   try {
-    return await prisma.packageTier.findUnique({
+    const tier = await prisma.packageTier.findUnique({
       where: { id },
       include: { serviceCategory: { include: { platform: true } } },
     });
+    if (tier) return tier;
   } catch {
-    return null;
+    // fall through to static data
   }
+  return getFallbackTierById(id);
 }
 
 export async function getReviews(limit = 12) {
+  if (!hasDatabase()) return FALLBACK_REVIEWS.slice(0, limit);
   try {
-    return await prisma.review.findMany({
+    const reviews = await prisma.review.findMany({
       orderBy: { createdAt: "desc" },
       take: limit,
     });
+    if (reviews.length > 0) return reviews;
   } catch {
-    return [];
+    // fall through to static data
   }
+  return FALLBACK_REVIEWS.slice(0, limit);
 }

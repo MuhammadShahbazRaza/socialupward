@@ -1,12 +1,61 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getTierById } from "@/lib/catalog";
+import { getTierById, hasDatabase } from "@/lib/catalog";
+import {
+  findFallbackCoupon,
+  incrementFallbackCouponUsage,
+  fallbackOrderStore,
+  makeFallbackOrderId,
+  type FallbackOrder,
+} from "@/lib/catalog-fallback";
 import { parsePriceTiers, quotePrice, shortOrderId } from "@/lib/pricing";
 import { createCheckoutSession, createCryptoInvoiceStub } from "@/lib/payments";
 
 export const dynamic = "force-dynamic";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+type Provider = "stripe" | "card" | "crypto";
+
+/** Resolve a usable coupon percentage: database first, static fallback second. */
+async function resolveCouponPct(
+  rawCode: unknown,
+): Promise<{ pct: number; code: string | null; fallback: boolean }> {
+  if (!rawCode || typeof rawCode !== "string" || !rawCode.trim()) {
+    return { pct: 0, code: null, fallback: false };
+  }
+  const code = rawCode.trim().toUpperCase();
+
+  if (hasDatabase()) {
+    try {
+      const found = await prisma.coupon.findUnique({ where: { code } });
+      const usable =
+        found &&
+        found.active &&
+        (!found.expiresAt || found.expiresAt > new Date()) &&
+        (found.maxUses === null || found.usedCount < found.maxUses);
+      if (usable) {
+        await prisma.coupon.update({
+          where: { code: found.code },
+          data: { usedCount: { increment: 1 } },
+        });
+        return { pct: found.discountPct, code: found.code, fallback: false };
+      }
+      if (found) return { pct: 0, code: null, fallback: false }; // exists but unusable
+    } catch {
+      // DB unreachable — try static coupons below.
+    }
+  }
+
+  const fb = findFallbackCoupon(code);
+  const usable =
+    fb && fb.active && (fb.maxUses === null || fb.usedCount < fb.maxUses);
+  if (usable) {
+    incrementFallbackCouponUsage(code);
+    return { pct: fb.discountPct, code: fb.code, fallback: true };
+  }
+  return { pct: 0, code: null, fallback: false };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -27,7 +76,9 @@ export async function POST(req: NextRequest) {
     if (!usernameOrUrl || String(usernameOrUrl).trim().length < 2) {
       return NextResponse.json({ error: "Your public username or post URL is required" }, { status: 400 });
     }
-    const provider = ["stripe", "card", "crypto"].includes(paymentProvider) ? paymentProvider : "stripe";
+    const provider: Provider = ["stripe", "card", "crypto"].includes(paymentProvider)
+      ? paymentProvider
+      : "stripe";
 
     const tier = await getTierById(tierId);
     if (!tier || !tier.active) {
@@ -41,72 +92,98 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Server-side pricing (never trust the client) ──────────────
-    let couponPct = 0;
-    let coupon: { code: string } | null = null;
-    if (couponCode && typeof couponCode === "string" && couponCode.trim()) {
-      const found = await prisma.coupon.findUnique({
-        where: { code: couponCode.trim().toUpperCase() },
-      });
-      const usable =
-        found &&
-        found.active &&
-        (!found.expiresAt || found.expiresAt > new Date()) &&
-        (found.maxUses === null || found.usedCount < found.maxUses);
-      if (usable) {
-        couponPct = found.discountPct;
-        coupon = { code: found.code };
-      }
-    }
-
-    const quote = quotePrice(parsePriceTiers(tier.priceTiers), qty, couponPct);
+    const coupon = await resolveCouponPct(couponCode);
+    const quote = quotePrice(parsePriceTiers(tier.priceTiers), qty, coupon.pct);
     if (!quote) {
       return NextResponse.json({ error: "Could not price this package" }, { status: 500 });
     }
 
-    // ── Create order ──────────────────────────────────────────────
-    const order = await prisma.order.create({
-      data: {
-        email: email.trim().toLowerCase(),
-        usernameOrUrl: String(usernameOrUrl).trim(),
-        platformId: tier.serviceCategory.platformId,
-        packageTierId: tier.id,
+    const normalizedEmail = email.trim().toLowerCase();
+    const handle = String(usernameOrUrl).trim();
+    const platformId = tier.serviceCategory.platformId;
+    const platformName = tier.serviceCategory.platform.name;
+    const description = `SocialUpward: ${qty.toLocaleString()} ${tier.unitLabel} (${tier.tierName}) — ${platformName}`;
+
+    // ── Persist: database first, in-memory store when unavailable ──
+    let orderId: string;
+    let orderNumber: string;
+
+    if (hasDatabase()) {
+      try {
+        const order = await prisma.order.create({
+          data: {
+            email: normalizedEmail,
+            usernameOrUrl: handle,
+            platformId,
+            packageTierId: tier.id,
+            quantity: qty,
+            unitPrice: quote.pricePer1000,
+            subtotal: quote.subtotal,
+            discountAmount: quote.discountAmount,
+            total: quote.total,
+            couponCode: coupon.code,
+            paymentProvider: provider,
+            paymentStatus: "PENDING",
+            status: "PENDING",
+          },
+        });
+        orderId = order.id;
+        orderNumber = shortOrderId(order.id);
+      } catch {
+        orderId = persistFallbackOrder();
+        orderNumber = orderId;
+      }
+    } else {
+      orderId = persistFallbackOrder();
+      orderNumber = orderId;
+    }
+
+    function persistFallbackOrder(): string {
+      const id = makeFallbackOrderId();
+      const record: FallbackOrder = {
+        id,
+        email: normalizedEmail,
+        usernameOrUrl: handle,
+        platformId,
+        packageTierId: tier!.id,
         quantity: qty,
-        unitPrice: quote.pricePer1000,
-        subtotal: quote.subtotal,
-        discountAmount: quote.discountAmount,
-        total: quote.total,
-        couponCode: coupon?.code ?? null,
+        unitPrice: quote!.pricePer1000,
+        subtotal: quote!.subtotal,
+        discountAmount: quote!.discountAmount,
+        total: quote!.total,
+        couponCode: coupon.code,
+        status: "PENDING",
         paymentProvider: provider,
         paymentStatus: "PENDING",
-        status: "PENDING",
-      },
-    });
-
-    if (coupon) {
-      await prisma.coupon.update({
-        where: { code: coupon.code },
-        data: { usedCount: { increment: 1 } },
-      });
+        createdAt: new Date().toISOString(),
+        platform: { name: platformName },
+        packageTier: {
+          tierName: tier!.tierName,
+          unitLabel: tier!.unitLabel,
+          serviceCategory: { name: tier!.serviceCategory.name },
+        },
+      };
+      fallbackOrderStore.set(id, record);
+      return id;
     }
 
     // ── Payment hook ──────────────────────────────────────────────
-    const description = `SocialUpward: ${qty.toLocaleString()} ${tier.unitLabel} (${tier.tierName}) — ${tier.serviceCategory.platform.name}`;
     let payment: { url: string | null; stub: boolean; crypto?: unknown } = { url: null, stub: true };
 
     if (provider === "crypto") {
-      payment = { ...payment, crypto: createCryptoInvoiceStub(order.id, quote.total) };
+      payment = { ...payment, crypto: createCryptoInvoiceStub(orderId, quote.total) };
     } else {
       payment = await createCheckoutSession({
-        orderId: order.id,
+        orderId,
         amountCents: Math.round(quote.total * 100),
-        email: order.email,
+        email: normalizedEmail,
         description,
       });
     }
 
     return NextResponse.json({
-      orderId: order.id,
-      orderNumber: shortOrderId(order.id),
+      orderId,
+      orderNumber,
       total: quote.total,
       payment,
     });
@@ -122,19 +199,31 @@ export async function GET(req: NextRequest) {
   if (!id || !email) {
     return NextResponse.json({ error: "Order ID and email are required" }, { status: 400 });
   }
-  try {
-    const order = await prisma.order.findFirst({
-      where: { id, email: email.trim().toLowerCase() },
-      include: {
-        platform: true,
-        packageTier: { include: { serviceCategory: true } },
-      },
-    });
-    if (!order) {
-      return NextResponse.json({ error: "No order found with that ID and email" }, { status: 404 });
+  const normalizedEmail = email.trim().toLowerCase();
+  const lookupId = id.trim();
+
+  // ── Database first ──────────────────────────────────────────────
+  if (hasDatabase()) {
+    try {
+      const order = await prisma.order.findFirst({
+        where: { id: lookupId, email: normalizedEmail },
+        include: {
+          platform: true,
+          packageTier: { include: { serviceCategory: true } },
+        },
+      });
+      if (order) return NextResponse.json({ order });
+    } catch {
+      // DB unreachable — check the in-memory store below.
     }
-    return NextResponse.json({ order });
-  } catch {
-    return NextResponse.json({ error: "Could not look up order" }, { status: 500 });
   }
+
+  // ── In-memory fallback store ────────────────────────────────────
+  const mem =
+    fallbackOrderStore.get(lookupId) ??
+    fallbackOrderStore.get(lookupId.toUpperCase());
+  if (mem && mem.email === normalizedEmail) {
+    return NextResponse.json({ order: mem });
+  }
+  return NextResponse.json({ error: "No order found with that ID and email" }, { status: 404 });
 }

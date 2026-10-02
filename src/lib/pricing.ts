@@ -69,3 +69,12 @@ export function formatCompact(n: number): string {
 export function shortOrderId(id: string): string {
   return id.slice(-8).toUpperCase();
 }
+
+/**
+ * Human-friendly order ID for display. Fallback/demo orders already use
+ * short readable IDs (SU-XXXXXX) — show those in full; shorten cuid-style
+ * database IDs instead.
+ */
+export function displayOrderId(id: string): string {
+  return id.startsWith("SU-") ? id.toUpperCase() : shortOrderId(id);
+}

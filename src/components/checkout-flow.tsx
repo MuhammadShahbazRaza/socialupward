@@ -21,7 +21,8 @@ import { Input, Label } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/components/ui/cn";
-import { parsePriceTiers, quotePrice, formatUSD, shortOrderId } from "@/lib/pricing";
+import { parsePriceTiers, quotePrice, formatUSD, displayOrderId } from "@/lib/pricing";
+import { saveLocalOrder, makeLocalOrderId, type LocalOrder } from "@/lib/local-orders";
 
 type TierPayload = {
   id: string;
@@ -122,6 +123,35 @@ export function CheckoutFlow() {
     if (!tier || !quote) return;
     setPlacing(true);
     setError("");
+
+    // Build a complete local order record so tracking works even if the
+    // server store is unreachable (no database / cold serverless instance).
+    const buildLocalOrder = (id: string): LocalOrder => ({
+      id,
+      email: email.trim().toLowerCase(),
+      usernameOrUrl: usernameOrUrl.trim(),
+      quantity,
+      subtotal: quote.subtotal,
+      discountAmount: quote.discountAmount,
+      total: quote.total,
+      couponCode: couponOk ? couponInput.trim().toUpperCase() : null,
+      status: "PENDING",
+      paymentStatus: "PENDING",
+      createdAt: new Date().toISOString(),
+      platform: { name: tier.serviceCategory.platform.name },
+      packageTier: {
+        tierName: tier.tierName,
+        unitLabel: tier.unitLabel,
+        serviceCategory: { name: tier.serviceCategory.name },
+      },
+    });
+
+    const completeLocally = () => {
+      const local = buildLocalOrder(makeLocalOrderId());
+      saveLocalOrder(local);
+      setDone({ orderId: local.id, total: local.total });
+    };
+
     try {
       const res = await fetch("/api/orders", {
         method: "POST",
@@ -135,16 +165,33 @@ export function CheckoutFlow() {
           paymentProvider: provider,
         }),
       });
-      const d = await res.json();
-      if (!res.ok) throw new Error(d.error ?? "Order failed");
-      // Payment hook: if Stripe returns a hosted URL, redirect there.
-      if (d.payment?.url) {
-        window.location.href = d.payment.url;
+      const d = await res.json().catch(() => ({} as Record<string, unknown>));
+
+      if (res.ok && typeof d.orderId === "string") {
+        // Server accepted it — still cache locally for resilient tracking.
+        saveLocalOrder(buildLocalOrder(d.orderId));
+        // Payment hook: if Stripe returns a hosted URL, redirect there.
+        if (d.payment && typeof d.payment === "object" && "url" in d.payment && d.payment.url) {
+          window.location.href = d.payment.url as string;
+          return;
+        }
+        setDone({ orderId: d.orderId, total: Number(d.total ?? quote.total) });
         return;
       }
-      setDone({ orderId: d.orderId, total: d.total });
+
+      if (res.status >= 500) {
+        // Server blew up — complete the order locally so the flow never dies.
+        completeLocally();
+        return;
+      }
+      throw new Error(typeof d.error === "string" ? d.error : "Order failed");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Order failed");
+      if (e instanceof TypeError) {
+        // Network failure (offline / DNS / connection reset) — complete locally.
+        completeLocally();
+      } else {
+        setError(e instanceof Error ? e.message : "Order failed");
+      }
     } finally {
       setPlacing(false);
     }
@@ -173,7 +220,7 @@ export function CheckoutFlow() {
           <CardContent className="p-6">
             <div className="text-sm text-slate-400">Order ID</div>
             <div className="mt-1 font-mono text-2xl font-bold tracking-widest text-gradient">
-              {shortOrderId(done.orderId)}
+              {displayOrderId(done.orderId)}
             </div>
             <div className="mt-3 text-sm text-slate-400">
               Total charged: <strong className="text-white">{formatUSD(done.total)}</strong>

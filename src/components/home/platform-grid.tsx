@@ -7,7 +7,7 @@ import type { Platform } from "@prisma/client";
 export function PlatformGrid({ platforms }: { platforms: Platform[] }) {
   if (platforms.length === 0) {
     return (
-      <section id="platforms" className="mx-auto max-w-7xl px-4 sm:px-6 py-16">
+      <section id="platforms" className="mx-auto max-w-7xl px-4 sm:px-6 py-16 scroll-mt-20">
         <div className="rounded-2xl border border-white/10 bg-ink-800/60 p-10 text-center">
           <h2 className="text-xl font-semibold text-white">Catalog is warming up</h2>
           <p className="mt-2 text-sm text-slate-400">
@@ -20,7 +20,7 @@ export function PlatformGrid({ platforms }: { platforms: Platform[] }) {
   }
 
   return (
-    <section id="platforms" className="mx-auto max-w-7xl px-4 sm:px-6 py-16 sm:py-24">
+    <section id="platforms" className="mx-auto max-w-7xl px-4 sm:px-6 py-16 sm:py-24 scroll-mt-20">
       <div className="text-center">
         <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight">
           Pick your platform. <span className="text-gradient">Pick your growth.</span>

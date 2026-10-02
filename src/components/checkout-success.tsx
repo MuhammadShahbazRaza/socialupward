@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { CheckCircle2 } from "lucide-react";
 import { Button } from "./ui/button";
-import { shortOrderId } from "@/lib/pricing";
+import { displayOrderId } from "@/lib/pricing";
 
 /**
  * Landing page for Stripe's success_url.
@@ -24,7 +24,7 @@ export function CheckoutSuccess() {
         {orderId && (
           <>
             {" "}
-            (<span className="font-mono text-white">{shortOrderId(orderId)}</span>)
+            (<span className="font-mono text-white">{displayOrderId(orderId)}</span>)
           </>
         )}
         . Your growth is queued — check your email for the receipt and tracking link.
